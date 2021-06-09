@@ -82,26 +82,6 @@ struct private_nm_creds_t {
 static enumerator_t *create_usercert_enumerator(private_nm_creds_t *this,
 							certificate_type_t cert, key_type_t key)
 {
-	public_key_t *public;
-
-	if (cert != CERT_ANY && cert != this->usercert->get_type(this->usercert))
-	{
-		return NULL;
-	}
-	if (key != KEY_ANY)
-	{
-		public = this->usercert->get_public_key(this->usercert);
-		if (!public)
-		{
-			return NULL;
-		}
-		if (public->get_type(public) != key)
-		{
-			public->destroy(public);
-			return NULL;
-		}
-		public->destroy(public);
-	}
 	this->lock->read_lock(this->lock);
 	return enumerator_create_cleaner(
 								enumerator_create_single(this->usercert, NULL),
@@ -114,6 +94,8 @@ static enumerator_t *create_usercert_enumerator(private_nm_creds_t *this,
 typedef struct {
 	/** ref to credential credential store */
 	private_nm_creds_t *this;
+	/** certificate type we are looking for */
+	certificate_type_t type;
 	/** type of key we are looking for */
 	key_type_t key;
 	/** CA certificate ID */
@@ -131,36 +113,16 @@ CALLBACK(cert_filter, bool,
 	cert_data_t *data, enumerator_t *orig, va_list args)
 {
 	certificate_t *cert, **out;
-	public_key_t *public;
 
 	VA_ARGS_VGET(args, out);
 
 	while (orig->enumerate(orig, &cert))
 	{
-		public = cert->get_public_key(cert);
-		if (!public)
+		if (certificate_matches(cert, data->type, data->key, data->id))
 		{
-			continue;
-		}
-		if (data->key != KEY_ANY && public->get_type(public) != data->key)
-		{
-			public->destroy(public);
-			continue;
-		}
-		if (data->id && data->id->get_type(data->id) == ID_KEY_ID &&
-			public->has_fingerprint(public, data->id->get_encoding(data->id)))
-		{
-			public->destroy(public);
 			*out = cert;
 			return TRUE;
 		}
-		public->destroy(public);
-		if (data->id && !cert->has_subject(cert, data->id))
-		{
-			continue;
-		}
-		*out = cert;
-		return TRUE;
 	}
 	return FALSE;
 }
@@ -169,14 +131,16 @@ CALLBACK(cert_filter, bool,
  * Create enumerator for trusted certificates
  */
 static enumerator_t *create_trusted_cert_enumerator(private_nm_creds_t *this,
-										key_type_t key, identification_t *id)
+										certificate_type_t type, key_type_t key,
+										identification_t *id)
 {
 	cert_data_t *data;
 
 	INIT(data,
 		.this = this,
-		.id = id,
+		.type = type,
 		.key = key,
+		.id = id,
 	);
 
 	this->lock->read_lock(this->lock);
@@ -190,15 +154,11 @@ METHOD(credential_set_t, create_cert_enumerator, enumerator_t*,
 	identification_t *id, bool trusted)
 {
 	if (id && this->usercert &&
-		id->equals(id, this->usercert->get_subject(this->usercert)))
+		certificate_matches(this->usercert, cert, key, id))
 	{
 		return create_usercert_enumerator(this, cert, key);
 	}
-	if (cert == CERT_X509 || cert == CERT_ANY)
-	{
-		return create_trusted_cert_enumerator(this, key, id);
-	}
-	return NULL;
+	return create_trusted_cert_enumerator(this, cert, key, id);
 }
 
 METHOD(credential_set_t, create_private_enumerator, enumerator_t*,
